@@ -1,0 +1,637 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Auto Scaling Lab - Dynamic Scaling of Apache Web Servers'
+
+Parameters:
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: Week3KeyPair
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instances
+
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+    Description: Latest Amazon Linux 2 AMI from Systems Manager Parameter Store
+
+Resources:
+  # VPC
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: ASG-Lab-VPC
+
+  # Public Subnet 1 (for ALB)
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: us-east-1a
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: ASG-Lab-PublicSubnet1
+
+  # Public Subnet 2 (for ALB)
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: us-east-1b
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: ASG-Lab-PublicSubnet2
+
+  # Private Subnet (for ASG)
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: us-east-1a
+      Tags:
+        - Key: Name
+          Value: ASG-Lab-PrivateSubnet
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: ASG-Lab-IGW
+
+  # Attach Internet Gateway to VPC
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Public Route Table
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: ASG-Lab-PublicRouteTable
+
+  # Public Route
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  # Associate Public Route Table with Public Subnets
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # EIP for NAT Gateway
+  NatGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: GatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: ASG-Lab-NAT-EIP
+
+  # NAT Gateway
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: ASG-Lab-NAT
+
+  # Private Route Table
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: ASG-Lab-PrivateRouteTable
+
+  # Private Route
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  # Associate Private Route Table with Private Subnet
+  PrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
+  # Security Groups
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP from ALB and SSH from anywhere
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !GetAtt ALBSecurityGroup.GroupId
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: ASG-Lab-InstanceSG
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP traffic from the internet
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: ASG-Lab-ALBSG
+
+  # Application Load Balancer (ALB)
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: ASG-Lab-ALB
+      Scheme: internet-facing
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: ASG-Lab-ALB
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: ASG-Lab-TG
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 5
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      TargetType: instance
+      Tags:
+        - Key: Name
+          Value: ASG-Lab-TargetGroup
+
+  # IAM Role for EC2 instances to access CloudWatch
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Path: /
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref EC2Role
+
+  # Launch Template
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: ASG-Lab-LaunchTemplate
+      VersionDescription: Initial version
+      LaunchTemplateData:
+        ImageId: !Ref LatestAmiId
+        InstanceType: t2.micro
+        KeyName: !Ref KeyName
+        SecurityGroupIds:
+          - !Ref InstanceSecurityGroup
+        IamInstanceProfile:
+          Name: !Ref EC2InstanceProfile
+        UserData:
+          Fn::Base64: |
+            #!/bin/bash
+            # Update packages
+            yum update -y
+            yum install -y httpd stress-ng bc
+            
+            # Start Apache and enable it on boot
+            systemctl start httpd
+            systemctl enable httpd
+            
+            # Create a modern, dark-themed UI for the web page
+            echo "<!DOCTYPE html>" > /var/www/html/index.html
+            echo "<html lang='en'><head><meta charset='UTF-8'>" >> /var/www/html/index.html
+            echo "<meta name='viewport' content='width=device-width, initial-scale=1.0'>" >> /var/www/html/index.html
+            echo "<title>AWS Auto Scaling Demo</title>" >> /var/www/html/index.html
+            echo "<style>" >> /var/www/html/index.html
+            echo "  body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; " >> /var/www/html/index.html
+            echo "         background-color: #1e1e1e; color: #f0f0f0; line-height: 1.6; }" >> /var/www/html/index.html
+            echo "  .container { max-width: 800px; margin: 0 auto; padding: 2rem; }" >> /var/www/html/index.html
+            echo "  header { text-align: center; margin-bottom: 2rem; padding-bottom: 1rem; " >> /var/www/html/index.html
+            echo "           border-bottom: 1px solid #444; }" >> /var/www/html/index.html
+            echo "  h1 { color: #61dafb; margin-bottom: 0.5rem; }" >> /var/www/html/index.html
+            echo "  h2 { color: #61dafb; }" >> /var/www/html/index.html
+            echo "  h3 { color: #f7df1e; margin-top: 2rem; }" >> /var/www/html/index.html
+            echo "  .card { background-color: #2a2a2a; border-radius: 8px; padding: 1.5rem; " >> /var/www/html/index.html
+            echo "          margin-bottom: 2rem; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3); }" >> /var/www/html/index.html
+            echo "  .instance-info { display: flex; align-items: center; }" >> /var/www/html/index.html
+            echo "  .instance-icon { font-size: 2.5rem; margin-right: 1rem; color: #61dafb; }" >> /var/www/html/index.html
+            echo "  button { background-color: #ff5722; border: none; color: white; padding: 12px 24px; " >> /var/www/html/index.html
+            echo "           text-align: center; text-decoration: none; display: inline-block; " >> /var/www/html/index.html
+            echo "           font-size: 16px; margin: 1rem 0; cursor: pointer; border-radius: 50px; " >> /var/www/html/index.html
+            echo "           transition: all 0.3s ease; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }" >> /var/www/html/index.html
+            echo "  button:hover { background-color: #e64a19; transform: translateY(-2px); " >> /var/www/html/index.html
+            echo "                  box-shadow: 0 4px 8px rgba(0,0,0,0.3); }" >> /var/www/html/index.html
+            echo "  button:active { transform: translateY(0); }" >> /var/www/html/index.html
+            echo "  progress { width: 100%; height: 20px; border-radius: 10px; }" >> /var/www/html/index.html
+            echo "  progress::-webkit-progress-bar { background-color: #444; border-radius: 10px; }" >> /var/www/html/index.html
+            echo "  progress::-webkit-progress-value { background: linear-gradient(to right, #4CAF50, #ff5722); " >> /var/www/html/index.html
+            echo "                                      border-radius: 10px; }" >> /var/www/html/index.html
+            echo "  #status { font-weight: bold; }" >> /var/www/html/index.html
+            echo "  .cpu-monitor { margin-top: 1rem; }" >> /var/www/html/index.html
+            echo "  .dashboard { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 2rem; }" >> /var/www/html/index.html
+            echo "  .dashboard-card { background-color: #333; padding: 1rem; border-radius: 8px; text-align: center; }" >> /var/www/html/index.html
+            echo "  .dashboard-value { font-size: 2rem; font-weight: bold; margin: 0.5rem 0; color: #61dafb; }" >> /var/www/html/index.html
+            echo "  .pulse { animation: pulse 2s infinite; }" >> /var/www/html/index.html
+            echo "  @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }" >> /var/www/html/index.html
+            echo "  @media (max-width: 600px) { .dashboard { grid-template-columns: 1fr; } }" >> /var/www/html/index.html
+            echo "</style></head><body>" >> /var/www/html/index.html
+            
+            # Get instance info
+            INSTANCE_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
+            INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+            INSTANCE_TYPE=$(curl -s http://169.254.169.254/latest/meta-data/instance-type)
+            AZ=$(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone)
+            
+            # Add content with instance info
+            echo "<div class='container'>" >> /var/www/html/index.html
+            echo "  <header>" >> /var/www/html/index.html
+            echo "    <h1>AWS Auto Scaling Demo</h1>" >> /var/www/html/index.html
+            echo "    <p>Experience the power of dynamic infrastructure scaling</p>" >> /var/www/html/index.html
+            echo "  </header>" >> /var/www/html/index.html
+            
+            echo "  <div class='card'>" >> /var/www/html/index.html
+            echo "    <div class='instance-info'>" >> /var/www/html/index.html
+            echo "      <div class='instance-icon'>&#128187;</div>" >> /var/www/html/index.html
+            echo "      <div>" >> /var/www/html/index.html
+            echo "        <h2>Instance Details</h2>" >> /var/www/html/index.html
+            echo "        <p><strong>IP Address:</strong> ${INSTANCE_IP}</p>" >> /var/www/html/index.html
+            echo "        <p><strong>Instance ID:</strong> ${INSTANCE_ID}</p>" >> /var/www/html/index.html
+            echo "        <p><strong>Instance Type:</strong> ${INSTANCE_TYPE}</p>" >> /var/www/html/index.html
+            echo "        <p><strong>Availability Zone:</strong> ${AZ}</p>" >> /var/www/html/index.html
+            echo "        <p>This instance is running in a private subnet behind an Application Load Balancer.</p>" >> /var/www/html/index.html
+            echo "      </div>" >> /var/www/html/index.html
+            echo "    </div>" >> /var/www/html/index.html
+            echo "  </div>" >> /var/www/html/index.html
+            
+            echo "  <div class='card'>" >> /var/www/html/index.html
+            echo "    <h3>&#128293; CPU Stress Test</h3>" >> /var/www/html/index.html
+            echo "    <p>Click the button below to initiate a CPU stress test. This will trigger the Auto Scaling Group to scale out when CPU utilization exceeds 50%.</p>" >> /var/www/html/index.html
+            echo "    <button onclick=\"stressTest()\">START STRESS TEST</button>" >> /var/www/html/index.html
+            echo "    <p id=\"status\">Ready to run test</p>" >> /var/www/html/index.html
+            echo "    <div class='cpu-monitor'>" >> /var/www/html/index.html
+            echo "      <p id=\"currentCPU\">Current CPU Usage: 0% <progress value=\"0\" max=\"100\"></progress></p>" >> /var/www/html/index.html
+            echo "    </div>" >> /var/www/html/index.html
+            echo "  </div>" >> /var/www/html/index.html
+            
+            echo "  <div class='dashboard'>" >> /var/www/html/index.html
+            echo "    <div class='dashboard-card'>" >> /var/www/html/index.html
+            echo "      <p>Test Duration</p>" >> /var/www/html/index.html
+            echo "      <div class='dashboard-value' id='timer'>3:00</div>" >> /var/www/html/index.html
+            echo "    </div>" >> /var/www/html/index.html
+            echo "    <div class='dashboard-card'>" >> /var/www/html/index.html
+            echo "      <p>Status</p>" >> /var/www/html/index.html
+            echo "      <div class='dashboard-value' id='statusIndicator'>IDLE</div>" >> /var/www/html/index.html
+            echo "    </div>" >> /var/www/html/index.html
+            echo "  </div>" >> /var/www/html/index.html
+            
+            # JavaScript to trigger stress test and show CPU usage
+            cat >> /var/www/html/index.html << 'EOF'
+            <script>
+            function stressTest() {
+              // Update status
+              document.getElementById("status").innerHTML = "Running intensive CPU test...";
+              document.getElementById("status").style.color = "#ff5722";
+              document.getElementById("statusIndicator").innerHTML = "RUNNING";
+              document.getElementById("statusIndicator").style.color = "#ff5722";
+              document.getElementById("statusIndicator").classList.add("pulse");
+              
+              // Start timer
+              startTimer(3 * 60);
+              
+              // Start CPU monitoring
+              startCPUMonitoring();
+              
+              fetch('/stress.cgi')
+                .then(response => response.text())
+                .then(data => {
+                  console.log(data);
+                })
+                .catch(error => {
+                  console.error('Error:', error);
+                });
+            }
+            
+            function startTimer(duration) {
+              let timer = duration;
+              const timerElement = document.getElementById('timer');
+              const interval = setInterval(() => {
+                const minutes = Math.floor(timer / 60);
+                const seconds = timer % 60;
+                
+                timerElement.textContent = `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+                
+                if (--timer < 0) {
+                  clearInterval(interval);
+                  timerElement.textContent = "0:00";
+                }
+              }, 1000);
+            }
+            
+            function startCPUMonitoring() {
+              // Check CPU every 5 seconds
+              const intervalId = setInterval(() => {
+                fetch('/cpu.cgi')
+                  .then(response => response.text())
+                  .then(data => {
+                    const cpuValue = parseFloat(data).toFixed(1);
+                    document.getElementById("currentCPU").innerHTML = `Current CPU Usage: ${cpuValue}% <progress value="${cpuValue}" max="100"></progress>`;
+                    
+                    // Change color based on CPU usage
+                    if (parseFloat(cpuValue) > 50) {
+                      document.getElementById("currentCPU").style.color = "#ff5722";
+                    } else if (parseFloat(cpuValue) > 25) {
+                      document.getElementById("currentCPU").style.color = "#f7df1e";
+                    } else {
+                      document.getElementById("currentCPU").style.color = "#4CAF50";
+                    }
+                  })
+                  .catch(error => {
+                    console.error('Error:', error);
+                  });
+              }, 5000);
+              
+              // Stop monitoring after 4 minutes (longer than stress test)
+              setTimeout(() => {
+                clearInterval(intervalId);
+                document.getElementById("status").innerHTML = "CPU stress test completed.";
+                document.getElementById("status").style.color = "#4CAF50";
+                document.getElementById("statusIndicator").innerHTML = "COMPLETE";
+                document.getElementById("statusIndicator").style.color = "#4CAF50";
+                document.getElementById("statusIndicator").classList.remove("pulse");
+              }, 240000);
+            }
+            </script>
+            </div>
+            </body></html>
+            EOF
+            
+            # Create CGI directory
+            mkdir -p /var/www/cgi-bin/
+            
+            # Create CGI script to trigger stress-ng - UPDATED FOR FASTER CPU SPIKE
+            cat > /var/www/cgi-bin/stress.cgi << 'EOF'
+            #!/bin/bash
+            echo "Content-type: text/plain"
+            echo ""
+            echo "Stressing CPU..."
+
+            # Run multiple CPU-intensive processes simultaneously with higher load
+            # This will get the CPU to spike above 50% much faster
+            nohup stress-ng --cpu $(nproc --all) --cpu-load 95 --cpu-method all --timeout 180s > /dev/null 2>&1 &
+            
+            # Run additional CPU-intensive processes in parallel
+            nohup openssl speed rsa2048 > /dev/null 2>&1 &
+            nohup dd if=/dev/zero bs=1M count=2048 | md5sum > /dev/null 2>&1 &
+            
+            # For t2.micro, run a quick artificial spike to ensure immediate metric reporting
+            nohup bash -c "for i in {1..8}; do yes > /dev/null & done; sleep 20; killall yes" > /dev/null 2>&1 &
+            EOF
+            
+            # Create CGI script to report current CPU usage
+            cat > /var/www/cgi-bin/cpu.cgi << 'EOF'
+            #!/bin/bash
+            echo "Content-type: text/plain"
+            echo ""
+            top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk '{print 100 - $1}'
+            EOF
+            
+            # Make CGI scripts executable
+            chmod +x /var/www/cgi-bin/stress.cgi
+            chmod +x /var/www/cgi-bin/cpu.cgi
+            
+            # Configure Apache to execute CGI scripts
+            cat > /etc/httpd/conf.d/cgi.conf << 'EOF'
+            ScriptAlias /stress.cgi "/var/www/cgi-bin/stress.cgi"
+            ScriptAlias /cpu.cgi "/var/www/cgi-bin/cpu.cgi"
+            <Directory "/var/www/cgi-bin">
+                AllowOverride None
+                Options +ExecCGI
+                AddHandler cgi-script .cgi
+                Require all granted
+            </Directory>
+            EOF
+            
+            # Create a custom stress test script that uses multiple techniques
+            cat > /usr/local/bin/high-cpu-load.sh << 'EOF'
+            #!/bin/bash
+            # This script runs multiple CPU-intensive processes simultaneously
+            
+            # Run multiple CPU-bound tasks
+            for i in {1..4}; do
+              # Calculate prime numbers - very CPU intensive
+              (
+                while true; do
+                  for j in {1..9999}; do
+                    echo "$j" | factor > /dev/null
+                  done
+                done
+              ) &
+            done
+            
+            # Tell stress-ng to pin the CPU at a high level
+            stress-ng --cpu 2 --cpu-load 90 --timeout 180s &
+            
+            # Wait for the specified duration
+            sleep 180
+            
+            # Kill all the processes we started
+            killall bc
+            killall factor
+            EOF
+            
+            # Make the custom script executable
+            chmod +x /usr/local/bin/high-cpu-load.sh
+            
+            # Install CloudWatch agent
+            yum install -y amazon-cloudwatch-agent
+            
+            # Create CloudWatch agent configuration file with proper instance ID and MORE FREQUENT metrics
+            instanceId=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+            
+            cat > /opt/aws/amazon-cloudwatch-agent/bin/config.json << EOF
+            {
+              "metrics": {
+                "metrics_collected": {
+                  "cpu": {
+                    "measurement": [
+                      "cpu_usage_idle",
+                      "cpu_usage_iowait",
+                      "cpu_usage_user",
+                      "cpu_usage_system"
+                    ],
+                    "metrics_collection_interval": 10,
+                    "totalcpu": true
+                  },
+                  "mem": {
+                    "measurement": [
+                      "mem_used_percent"
+                    ],
+                    "metrics_collection_interval": 10
+                  }
+                },
+                "append_dimensions": {
+                  "InstanceId": "${instanceId}"
+                }
+              }
+            }
+            EOF
+            
+            # Start the CloudWatch agent
+            /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/bin/config.json -s
+            
+            # Restart Apache to apply changes
+            systemctl restart httpd
+
+  # Auto Scaling Group (ASG)
+  ASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: ASG-Lab-AutoScalingGroup
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MinSize: "1"
+      MaxSize: "3"
+      DesiredCapacity: "1"
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnet
+      TargetGroupARNs:
+        - !Ref ALBTargetGroup
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      Tags:
+        - Key: Name
+          Value: AutoScalingGroup-Lab-Instance
+          PropagateAtLaunch: true
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 1
+        MaxBatchSize: 1
+        PauseTime: PT5M
+        WaitOnResourceSignals: true
+
+  # Scale Out Policy
+  ScaleOutPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref ASG
+      PolicyType: SimpleScaling
+      AdjustmentType: ChangeInCapacity
+      ScalingAdjustment: 1
+      Cooldown: "30"
+
+  # CloudWatch Alarm to trigger Scale Out
+  CPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: ASG-Lab-HighCPUAlarm
+      AlarmDescription: Scale out if CPU > 50% for 1 consecutive period of 30 seconds
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 30
+      EvaluationPeriods: 1
+      Threshold: 50
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref ScaleOutPolicy
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref ASG
+
+Outputs:
+  LoadBalancerURL:
+    Description: URL of the deployed ALB
+    Value: !Join [ "", [ "http://", !GetAtt ALB.DNSName ] ]
+
+  VPCId:
+    Description: VPC ID
+    Value: !Ref VPC
+
+  PublicSubnets:
+    Description: Public Subnets (comma separated)
+    Value: !Join [ ",", [ !Ref PublicSubnet1, !Ref PublicSubnet2 ] ]
+
+  PrivateSubnet:
+    Description: Private Subnet
+    Value: !Ref PrivateSubnet
