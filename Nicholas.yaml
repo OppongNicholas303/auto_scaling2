@@ -4,7 +4,7 @@ Description: 'Auto Scaling Lab - Dynamic Scaling of Apache Web Servers'
 Parameters:
   KeyName:
     Type: AWS::EC2::KeyPair::KeyName
-    Default: Week3KeyPair
+    Default: workshop-key
     Description: Name of an existing EC2 KeyPair to enable SSH access to the instances
 
   LatestAmiId:
