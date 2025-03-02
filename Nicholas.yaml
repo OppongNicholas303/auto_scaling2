@@ -22,7 +22,7 @@ Resources:
       EnableDnsHostnames: true
       Tags:
         - Key: Name
-          Value: ASG-Lab-VPC
+          Value: ASG1-Lab-VPC
 
   # Public Subnet 1 (for ALB)
   PublicSubnet1:
@@ -34,7 +34,7 @@ Resources:
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: ASG-Lab-PublicSubnet1
+          Value: ASG1-Lab-PublicSubnet1
 
   # Public Subnet 2 (for ALB)
   PublicSubnet2:
@@ -46,9 +46,9 @@ Resources:
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: ASG-Lab-PublicSubnet2
+          Value: ASG1-Lab-PublicSubnet2
 
-  # Private Subnet (for ASG)
+  # Private Subnet (for ASG1)
   PrivateSubnet:
     Type: AWS::EC2::Subnet
     Properties:
@@ -57,7 +57,7 @@ Resources:
       AvailabilityZone: us-east-1a
       Tags:
         - Key: Name
-          Value: ASG-Lab-PrivateSubnet
+          Value: ASG1-Lab-PrivateSubnet
 
   # Internet Gateway
   InternetGateway:
@@ -65,7 +65,7 @@ Resources:
     Properties:
       Tags:
         - Key: Name
-          Value: ASG-Lab-IGW
+          Value: ASG1-Lab-IGW
 
   # Attach Internet Gateway to VPC
   GatewayAttachment:
@@ -81,7 +81,7 @@ Resources:
       VpcId: !Ref VPC
       Tags:
         - Key: Name
-          Value: ASG-Lab-PublicRouteTable
+          Value: ASG1-Lab-PublicRouteTable
 
   # Public Route
   PublicRoute:
@@ -113,7 +113,7 @@ Resources:
       Domain: vpc
       Tags:
         - Key: Name
-          Value: ASG-Lab-NAT-EIP
+          Value: ASG1-Lab-NAT-EIP
 
   # NAT Gateway
   NatGateway:
@@ -123,7 +123,7 @@ Resources:
       SubnetId: !Ref PublicSubnet1
       Tags:
         - Key: Name
-          Value: ASG-Lab-NAT
+          Value: ASG1-Lab-NAT
 
   # Private Route Table
   PrivateRouteTable:
@@ -132,7 +132,7 @@ Resources:
       VpcId: !Ref VPC
       Tags:
         - Key: Name
-          Value: ASG-Lab-PrivateRouteTable
+          Value: ASG1-Lab-PrivateRouteTable
 
   # Private Route
   PrivateRoute:
@@ -169,7 +169,7 @@ Resources:
           CidrIp: 0.0.0.0/0
       Tags:
         - Key: Name
-          Value: ASG-Lab-InstanceSG
+          Value: ASG1-Lab-InstanceSG
 
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -186,13 +186,13 @@ Resources:
           CidrIp: 0.0.0.0/0
       Tags:
         - Key: Name
-          Value: ASG-Lab-ALBSG
+          Value: ASG1-Lab-ALBSG
 
   # Application Load Balancer (ALB)
   ALB:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      Name: ASG-Lab-ALB
+      Name: ASG1-Lab-ALB
       Scheme: internet-facing
       Subnets:
         - !Ref PublicSubnet1
@@ -201,7 +201,7 @@ Resources:
         - !Ref ALBSecurityGroup
       Tags:
         - Key: Name
-          Value: ASG-Lab-ALB
+          Value: ASG1-Lab-ALB
 
   ALBListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -216,7 +216,7 @@ Resources:
   ALBTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      Name: ASG-Lab-TG
+      Name: ASG1-Lab-TG
       HealthCheckPath: /
       HealthCheckIntervalSeconds: 30
       HealthCheckTimeoutSeconds: 5
@@ -228,7 +228,7 @@ Resources:
       TargetType: instance
       Tags:
         - Key: Name
-          Value: ASG-Lab-TargetGroup
+          Value: ASG1-Lab-TargetGroup
 
   # IAM Role for EC2 instances to access CloudWatch
   EC2Role:
@@ -256,7 +256,7 @@ Resources:
   LaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
-      LaunchTemplateName: ASG-Lab-LaunchTemplate
+      LaunchTemplateName: ASG1-Lab-LaunchTemplate
       VersionDescription: Initial version
       LaunchTemplateData:
         ImageId: !Ref LatestAmiId
@@ -562,11 +562,11 @@ Resources:
             # Restart Apache to apply changes
             systemctl restart httpd
 
-  # Auto Scaling Group (ASG)
-  ASG:
+  # Auto Scaling Group (ASG1)
+  ASG1:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
-      AutoScalingGroupName: ASG-Lab-AutoScalingGroup
+      AutoScalingGroupName: ASG1-Lab-AutoScalingGroup
       LaunchTemplate:
         LaunchTemplateId: !Ref LaunchTemplate
         Version: !GetAtt LaunchTemplate.LatestVersionNumber
@@ -594,7 +594,7 @@ Resources:
   ScaleOutPolicy:
     Type: AWS::AutoScaling::ScalingPolicy
     Properties:
-      AutoScalingGroupName: !Ref ASG
+      AutoScalingGroupName: !Ref ASG1
       PolicyType: SimpleScaling
       AdjustmentType: ChangeInCapacity
       ScalingAdjustment: 1
@@ -604,7 +604,7 @@ Resources:
   CPUAlarmHigh:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: ASG-Lab-HighCPUAlarm
+      AlarmName: ASG1-Lab-HighCPUAlarm
       AlarmDescription: Scale out if CPU > 50% for 1 consecutive period of 30 seconds
       MetricName: CPUUtilization
       Namespace: AWS/EC2
@@ -617,7 +617,7 @@ Resources:
         - !Ref ScaleOutPolicy
       Dimensions:
         - Name: AutoScalingGroupName
-          Value: !Ref ASG
+          Value: !Ref ASG1
 
 Outputs:
   LoadBalancerURL:
