@@ -4,7 +4,7 @@ Description: 'Auto Scaling Lab - Dynamic Scaling of Apache Web Servers'
 Parameters:
   KeyName:
     Type: AWS::EC2::KeyPair::KeyName
-    Default: workshop-key
+    Default: ec2-key
     Description: Name of an existing EC2 KeyPair to enable SSH access to the instances
 
   LatestAmiId:
@@ -30,7 +30,7 @@ Resources:
     Properties:
       VpcId: !Ref VPC
       CidrBlock: 10.0.1.0/24
-      AvailabilityZone: us-west-1a
+      AvailabilityZone: us-west-1c
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
@@ -54,7 +54,7 @@ Resources:
     Properties:
       VpcId: !Ref VPC
       CidrBlock: 10.0.2.0/24
-      AvailabilityZone: us-west-1a
+      AvailabilityZone: us-west-1c
       Tags:
         - Key: Name
           Value: ASG-Lab-PrivateSubnet
