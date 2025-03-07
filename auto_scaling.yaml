@@ -600,6 +600,15 @@ Resources:
       ScalingAdjustment: 1
       Cooldown: "30"
 
+  ScaleInPolicy:
+  Type: AWS::AutoScaling::ScalingPolicy
+  Properties:
+    AutoScalingGroupName: !Ref ASG
+    PolicyType: SimpleScaling
+    AdjustmentType: ChangeInCapacity
+    ScalingAdjustment: -1
+    Cooldown: "60"
+    
   # CloudWatch Alarm to trigger Scale Out
   CPUAlarmHigh:
     Type: AWS::CloudWatch::Alarm
