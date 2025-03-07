@@ -600,15 +600,6 @@ Resources:
       ScalingAdjustment: 1
       Cooldown: "30"
 
-  ScaleInPolicy:
-  Type: AWS::AutoScaling::ScalingPolicy
-  Properties:
-    AutoScalingGroupName: !Ref ASG
-    PolicyType: SimpleScaling
-    AdjustmentType: ChangeInCapacity
-    ScalingAdjustment: -1
-    Cooldown: "60"
-
   # CloudWatch Alarm to trigger Scale Out
   CPUAlarmHigh:
     Type: AWS::CloudWatch::Alarm
@@ -624,25 +615,6 @@ Resources:
       ComparisonOperator: GreaterThanThreshold
       AlarmActions:
         - !Ref ScaleOutPolicy
-      Dimensions:
-        - Name: AutoScalingGroupName
-          Value: !Ref ASG
-
-
-  CPUAlarmLow:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: ASG-Lab-LowCPUAlarm
-      AlarmDescription: Scale in if CPU < 25% for 2 consecutive periods of 5 minutes
-      MetricName: CPUUtilization
-      Namespace: AWS/EC2
-      Statistic: Average
-      Period: 300
-      EvaluationPeriods: 2
-      Threshold: 25
-      ComparisonOperator: LessThanThreshold
-      AlarmActions:
-        - !Ref ScaleInPolicy
       Dimensions:
         - Name: AutoScalingGroupName
           Value: !Ref ASG
